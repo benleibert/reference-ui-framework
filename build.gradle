@@ -1,0 +1,289 @@
+/*
+ * This program is part of the OpenLMIS logistics management information system platform software.
+ * Copyright © 2013 VillageReach
+ *
+ * This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+ *  
+ * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+ * You should have received a copy of the GNU Affero General Public License along with this program.  If not, see http://www.gnu.org/licenses.  For additional information contact info@OpenLMIS.org. 
+ */
+
+
+import org.apache.tools.ant.filters.ReplaceTokens
+import org.apache.tools.ant.taskdefs.condition.Os
+
+apply plugin: 'jetty'
+apply plugin: 'war'
+//apply plugin: 'cobertura'
+
+task npm(type: Exec) {
+    group = "Build"
+    description = "Installs all Node.js dependencies defined in package.json"
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        commandLine 'cmd', '/c', 'npm', 'install'
+    } else {
+        commandLine 'npm', 'install'
+    }
+    inputs.file "package.json"
+    outputs.dir "node_modules"
+}
+
+class GruntTask extends Exec {
+    private String gruntExecutable = Os.isFamily(Os.FAMILY_WINDOWS) ? "grunt.cmd" : "grunt"
+    private String switches = "--no-color"
+
+    String gruntArgs = ""
+
+    public GruntTask() {
+        super()
+        this.setExecutable(gruntExecutable)
+    }
+
+    public void setGruntArgs(String gruntArgs) {
+        this.args = "$switches $gruntArgs".trim().split(" ") as List
+    }
+}
+
+task jsHint(type: GruntTask) {
+    description = 'Runs JSHint against all JS files and fails upon JSHint error'
+    workingDir '.'
+    gruntArgs = "jshint"
+    dependsOn npm
+}
+
+task karmaRun(type: Exec) {
+    description = 'Runs jasmine specs and publishes js tests coverage report'
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        commandLine 'cmd', '/c', 'karma', 'start', 'karma.config.js'
+    } else {
+        commandLine 'karma', 'start', 'karma.config.js'
+    }
+}
+
+task lesslint(type: GruntTask) {
+    description = 'Runs LessLint against all LESS files'
+    workingDir '.'
+    gruntArgs = "lesslint --force"
+    dependsOn npm
+}
+
+task less(type: GruntTask) {
+    description = 'Compiles all LESS files to CSS'
+    workingDir '.'
+    gruntArgs = "less"
+    dependsOn npm
+}
+
+task uglify(type: GruntTask) {
+    description = 'Minifies JS files'
+    workingDir '.'
+    gruntArgs = "uglify"
+    dependsOn npm
+}
+
+task lesswatch(type: GruntTask) {
+    description = 'Looks for changes in LESS and recompiles to CSS upon detecting change'
+    workingDir '.'
+    gruntArgs = 'watch'
+    ignoreExitValue = true
+    dependsOn npm
+}
+
+
+repositories {
+    jcenter()
+}
+
+buildscript {
+    repositories {
+        mavenCentral()
+        jcenter()
+    }
+    dependencies {
+        classpath "net.saliman:gradle-cobertura-plugin:2.2.7"
+        //classpath 'com.github.ben-manes:gradle-versions-plugin:0.8'
+        //classpath "net.saliman:gradle-properties-plugin:1.4.2"
+    }
+}
+
+war {
+    exclude "public/less/"
+    exclude "public/css/"
+    exclude "public/fonts/"
+    exclude "public/images/"
+    exclude "public/js/"
+    exclude "public/lib/"
+
+    doFirst {
+        prepareVersionedDirectory.execute();
+    }
+
+    doLast {
+        cleanWorkspace.execute()
+    }
+}
+
+task prepareVersionedDirectory(type: Copy) {
+    ext.currentTime = System.properties.get('version', new Date().getTime() + "");
+    from('src/main/webapp/public') {
+        exclude 'pages/**/*.*', 'v' + ext.currentTime + '**/*';
+    }
+    into 'src/main/webapp/public/v' + ext.currentTime;
+    includeEmptyDirs = false;
+}
+
+tasks.withType(War) {
+    eachFile { FileCopyDetails fileCopy ->
+        if (fileCopy.name.equals('services.js') || fileCopy.name.equals('offline.appcacheOFF')) {
+            fileCopy.filter(ReplaceTokens, tokens: [version: prepareVersionedDirectory.currentTime])
+        }
+        if (fileCopy.name.equals('offline.appcacheOFF')) {
+            fileCopy.setName('offline.appcache')
+        }
+        if (fileCopy.name.endsWith('html') || fileCopy.name.endsWith('css') || fileCopy.name.endsWith('appcache'))
+            fileCopy.filter { String line ->
+                if (!line.contains(".html") && !line.contains("/settings/")) //eg: http://localhost:9091/settings/LOGIN_SUCCESS_DEFAULT_LANDING_PAGE.json
+                    line.replace('/public', '/public/v' + prepareVersionedDirectory.currentTime)
+                else
+                    "$line"
+            }
+
+        /*
+        if (fileCopy.name.equals('login-form.html')) {
+            fileCopy.filter(ReplaceTokens, tokens: [major_version: majorVersion, 
+                                                    minor_version: minorVersion, 
+                                                    patch_version: patchVersion, 
+                                                    build_version: buildVersion])
+        } */
+    }
+}
+
+task cleanWorkspace(type: Delete) {
+    delete 'src/main/webapp/public/v' + prepareVersionedDirectory.currentTime + '/';
+}
+
+build.doLast {
+    //karmaRun.execute()
+    jsHint.execute()
+    cleanWorkspace.execute()
+}
+
+dependencies {
+    compile 'log4j:log4j:1.2.15',
+            'org.slf4j:slf4j-log4j12:1.7.5',
+            'commons-fileupload:commons-fileupload:1.2.2',
+            'com.itextpdf:itextpdf:5.4.0',
+
+            'com.wordnik:swagger-annotations:1.3.12',
+            'com.mangofactory:swagger-models:0.9.5',
+            'com.mangofactory:swagger-springmvc:0.9.5' ,
+
+            'org.springframework:spring-webmvc:4.1.5.RELEASE',
+            'org.springframework:spring-core:4.1.5.RELEASE',
+            'org.springframework:spring-web:4.1.5.RELEASE',
+            'org.springframework:spring-aspects:4.1.5.RELEASE',
+            //'org.springframework:spring-aop:4.1.5.RELEASE',
+            'org.springframework:spring-messaging:4.1.5.RELEASE',
+            'org.springframework:spring-context-support:4.1.5.RELEASE',
+            'org.springframework:spring-tx:4.1.5.RELEASE',
+
+            'org.springframework.security:spring-security-taglibs:3.2.6.RELEASE',
+            'org.springframework.security:spring-security-core:3.2.6.RELEASE',
+            'org.springframework.security:spring-security-web:3.2.6.RELEASE',
+            'org.springframework.security:spring-security-config:3.2.6.RELEASE',
+
+            'org.springframework.integration:spring-integration-core:4.1.2.RELEASE',
+            'org.springframework.integration:spring-integration-jdbc:4.1.2.RELEASE',
+            'org.springframework.integration:spring-integration-ftp:4.1.2.RELEASE',
+
+            'xml-apis:xml-apis:2.0.2',
+            'commons-collections:commons-collections:3.2.2',
+            'org.apache.commons:commons-collections4:4.1',
+            'javax.servlet:javax.servlet-api:3.1.0' ,
+
+            'com.fasterxml.jackson.core:jackson-databind:2.5.1',
+            'com.fasterxml.jackson.core:jackson-core:2.5.1',
+            'com.fasterxml.jackson.core:jackson-annotations:2.5.1',
+
+            'org.projectlombok:lombok:1.16.2'
+
+    compile group: 'org.json', name: 'json', version: '20160212'
+    compile group: 'org.jsoup', name: 'jsoup', version: '1.9.1'
+
+
+    /*
+    testCompile  project(path: ':modules:core', configuration: 'testFixtures'),
+            project(path: ':modules:rest-api', configuration: 'testFixtures'),
+            project(path: ':modules:requisition', configuration: 'testFixtures'),
+            project(path: ':modules:shipment', configuration: 'testFixtures'),
+            project(path: ':modules:distribution', configuration: 'testFixtures'),
+            project(path: ':modules:report', configuration: 'testFixtures'),
+            project(path: ':modules:reporting', configuration: 'testFixtures')
+            */
+}
+
+/*
+sonarRunner {
+    sonarProperties {
+        properties["sonar.sources"] += 'src/main/webapp/public/js'
+        properties["sonar.sources"] += 'src/main/webapp/public/pages'
+        properties["sonar.sources"] += 'src/main/webapp/public/less'
+        properties["sonar.tests"] += 'src/test/javascript/specs'
+    }
+}
+*/
+
+jettyRun {
+    jettyRun.httpPort = 9092;
+    contextPath = ''
+    daemon = true;
+    jettyRun.scanIntervalSeconds = 1
+    System.properties.get('defaultLocale', 'en')
+    System.properties.get('environmentName', 'local')
+}
+
+jettyRunWar {
+    httpPort = 9092;
+    contextPath = ''
+    daemon = false;
+    scanIntervalSeconds = 1
+    System.properties.get('defaultLocale', 'en')
+    System.properties.get('environmentName', 'local')
+}
+
+def configureHttps(keystore, password) {
+    ext.connectors = [jettyRun.class.classLoader.loadClass('org.mortbay.jetty.security.SslSocketConnector').newInstance()]
+    ext.connectors[0].port = 9092
+    ext.connectors[0].keystore = connectors[0].truststore = keystore
+    ext.connectors[0].keyPassword = connectors[0].trustPassword = password
+    ext.connectors[0].wantClientAuth = true
+    ext.connectors[0].needClientAuth = false
+    return ext.connectors;
+}
+
+task run(dependsOn: jettyRunWar) {
+    description = 'Runs the Jetty server using the WAR file'
+}
+
+task runWithLess(dependsOn: [jettyRun, lesswatch]) {
+    description = 'Runs the Jetty server and starts watching LESS files for changes'
+}
+
+task explodedWar(type: Copy) {
+    description = 'Explodes WAR file'
+    into "$buildDir/exploded"
+    with war
+}
+
+task deployOpenLmis(type: GradleBuild) {
+    tasks = ['build']
+    tasks = ['cargoRedeployRemote']
+}
+
+compileJava.dependsOn less
+
+/*
+cobertura {
+    coverageFormats << 'xml'
+    coverageIgnoreTrivial = true
+} */
